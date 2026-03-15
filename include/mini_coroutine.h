@@ -38,6 +38,7 @@ public:
     void yield_current();
     void block_current();            // 阻塞当前协程
     void wake(int coroutine_id);     // 唤醒某个协程
+    void clear();                    // run() 之后调用，释放所有 FINISHED 协程内存
 
 private:
     ucontext_t main_ctx;

@@ -1,5 +1,9 @@
 #include "raft_node.h"
+#include "my_log.h"
 #include <sstream>
+#include <csignal>
+#include <thread>
+#include <chrono>
 
 int main(int argc, char* argv[]) {
     if (argc < 4) {
@@ -31,6 +35,13 @@ int main(int argc, char* argv[]) {
         peer.port = std::stoi(peer_addr.substr(colon_pos_ + 1));
         peers.emplace_back(peer);
     }
+
+    // SIGTERM 时刷出线程本地日志缓冲，确保日志落入 page cache 后退出
+    std::signal(SIGTERM, [](int) {
+        myLog::get_instance()->flush_local_buffer();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        exit(0);
+    });
 
     RaftNode node(node_id, ip, port, peers);
     std::cout << "Starting Raft node..." << std::endl;

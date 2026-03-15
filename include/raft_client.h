@@ -6,6 +6,8 @@
 #include <vector>
 #include <string>
 #include <mutex>
+#include <thread>
+#include <chrono>
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  RaftClient — 带 leader 自动重定向的 Raft KV 客户端
@@ -45,60 +47,104 @@ public:
     }
 
 private:
-    // 发送写命令（PUT / DELETE），处理 leader 重定向
+    // 发送写命令（PUT / DELETE），处理 leader 重定向 + 选举期间退避重试
     bool send_write(const std::string& cmd) {
-        std::string cur_ip; int cur_port;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            cur_ip = leader_ip_; cur_port = leader_port_;
-        }
+        int delay_ms = 100;
+        constexpr int kMaxRetries   = 5;
+        constexpr int kMaxDelay     = 1000;
+        constexpr int kMaxRedirects = 10;
+        int redirect_count = 0;
 
-        // 先尝试缓存 leader，再轮询其余节点
-        auto order = build_order(cur_ip, cur_port);
-
-        for (const auto& [ip, port] : order) {
-            raft::ClientResponse resp;
-            if (!do_call(ip, port, cmd, resp)) continue;
-
-            if (resp.success()) {
+        for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+            std::string cur_ip; int cur_port;
+            {
                 std::lock_guard<std::mutex> lk(mu_);
-                leader_ip_ = ip; leader_port_ = port;
-                return true;
+                cur_ip = leader_ip_; cur_port = leader_port_;
             }
 
-            // 收到 redirect hint
-            if (!resp.addr().empty() && resp.port() > 0) {
-                std::lock_guard<std::mutex> lk(mu_);
-                leader_ip_ = resp.addr(); leader_port_ = resp.port();
+            bool got_redirect = false;
+            for (const auto& [ip, port] : build_order(cur_ip, cur_port)) {
+                raft::ClientResponse resp;
+                int err_code = 0;
+                if (!do_call(ip, port, cmd, resp, &err_code)) continue;
+
+                if (resp.success()) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    leader_ip_ = ip; leader_port_ = port;
+                    return true;
+                }
+                // 收到 redirect hint：更新 leader，跳出内层不走退避
+                if (!resp.addr().empty() && resp.port() > 0) {
+                    {
+                        std::lock_guard<std::mutex> lk(mu_);
+                        leader_ip_ = resp.addr(); leader_port_ = resp.port();
+                    }
+                    got_redirect = true;
+                    break;
+                }
             }
+
+            if (got_redirect && redirect_count++ < kMaxRedirects) {
+                --attempt;  // redirect 不消耗退避次数
+                continue;
+            }
+            if (attempt == kMaxRetries) break;
+
+            // 所有节点均无法服务（选举中），退避等待
+            LOG_WARN("[RaftClient] All nodes unavailable, backoff "
+                     + std::to_string(delay_ms) + "ms");
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            delay_ms = std::min(delay_ms * 2, kMaxDelay);
         }
         return false;
     }
 
-    // 发送读命令（GET / LIST），处理 leader 重定向
+    // 发送读命令（GET / LIST），处理 leader 重定向 + 选举期间退避重试
     std::string send_read(const std::string& cmd) {
-        std::string cur_ip; int cur_port;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            cur_ip = leader_ip_; cur_port = leader_port_;
-        }
+        int delay_ms = 100;
+        constexpr int kMaxRetries   = 5;
+        constexpr int kMaxDelay     = 1000;
+        constexpr int kMaxRedirects = 10;
+        int redirect_count = 0;
 
-        auto order = build_order(cur_ip, cur_port);
-
-        for (const auto& [ip, port] : order) {
-            raft::ClientResponse resp;
-            if (!do_call(ip, port, cmd, resp)) continue;
-
-            if (resp.success()) {
+        for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+            std::string cur_ip; int cur_port;
+            {
                 std::lock_guard<std::mutex> lk(mu_);
-                leader_ip_ = ip; leader_port_ = port;
-                return resp.value();
+                cur_ip = leader_ip_; cur_port = leader_port_;
             }
 
-            if (!resp.addr().empty() && resp.port() > 0) {
-                std::lock_guard<std::mutex> lk(mu_);
-                leader_ip_ = resp.addr(); leader_port_ = resp.port();
+            bool got_redirect = false;
+            for (const auto& [ip, port] : build_order(cur_ip, cur_port)) {
+                raft::ClientResponse resp;
+                int err_code = 0;
+                if (!do_call(ip, port, cmd, resp, &err_code)) continue;
+
+                if (resp.success()) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    leader_ip_ = ip; leader_port_ = port;
+                    return resp.value();
+                }
+                if (!resp.addr().empty() && resp.port() > 0) {
+                    {
+                        std::lock_guard<std::mutex> lk(mu_);
+                        leader_ip_ = resp.addr(); leader_port_ = resp.port();
+                    }
+                    got_redirect = true;
+                    break;
+                }
             }
+
+            if (got_redirect && redirect_count++ < kMaxRedirects) {
+                --attempt;
+                continue;
+            }
+            if (attempt == kMaxRetries) break;
+
+            LOG_WARN("[RaftClient] All nodes unavailable, backoff "
+                     + std::to_string(delay_ms) + "ms");
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            delay_ms = std::min(delay_ms * 2, kMaxDelay);
         }
         return "";
     }
@@ -115,17 +161,21 @@ private:
         return order;
     }
 
-    // 执行一次 RPC，成功解析返回 true
+    // 执行一次 RPC，成功解析返回 true；err_code_out 可选接收错误码
     bool do_call(const std::string& ip, int port,
                  const std::string& cmd,
-                 raft::ClientResponse& resp) {
+                 raft::ClientResponse& resp,
+                 int* err_code_out = nullptr) {
         raft::ClientRequest req;
         req.set_command(cmd);
         std::string req_bin;
         req.SerializeToString(&req_bin);
         try {
+            int err_code = 0;
             std::string resp_bin = rpc_client_.call(
-                ip, port, "raft.RaftService.ClientStorage", req_bin);
+                ip, port, "raft.RaftService.ClientStorage", req_bin, &err_code);
+            if (err_code_out) *err_code_out = err_code;
+            if (err_code == 1) return false;  // OVERLOAD
             return resp.ParseFromString(resp_bin);
         } catch (...) {
             return false;

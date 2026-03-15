@@ -89,6 +89,12 @@ void yield() {
     scheduler.yield_current();
 }
 
+void Scheduler::clear() {
+    coroutines.clear();
+    runnable_indices.clear();
+    current = -1;
+}
+
 void block() {
     scheduler.block_current();
 }

@@ -1,29 +1,36 @@
 #include "my_rpc.h"
+#include "mini_coroutine.h"
 #include <cstring>
 
 namespace myrpc {
 
 // ── 常量 ────────────────────────────────────────────────────────────────────
-static constexpr int      kMaxConnections = 1000;
+static constexpr int      kMaxConnections  = 1000;
+static constexpr uint32_t kServerBusyMagic = 0xFFFFFFFF;
 
-// ── 内部辅助：循环读取恰好 n 字节 ─────────────────────────────────────────
+// ── 内部辅助：循环读取恰好 n 字节（非阻塞，EAGAIN 时 yield 让出 CPU）─────
 static bool read_n(int fd, char* buf, size_t n) {
     size_t total = 0;
     while (total < n) {
         ssize_t r = read(fd, buf + total, n - total);
-        if (r <= 0) return false;
-        total += static_cast<size_t>(r);
+        if (r > 0)  { total += static_cast<size_t>(r); continue; }
+        if (r == 0) { return false; }  // EOF
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { yield(); continue; }
+        if (errno == EINTR) { continue; }
+        return false;
     }
     return true;
 }
 
-// ── 内部辅助：循环写出所有字节 ────────────────────────────────────────────
+// ── 内部辅助：循环写出所有字节（非阻塞，EAGAIN 时 yield 让出 CPU）────────
 static bool write_all(int fd, const char* buf, size_t n) {
     size_t total = 0;
     while (total < n) {
         ssize_t w = write(fd, buf + total, n - total);
-        if (w <= 0) return false;
-        total += static_cast<size_t>(w);
+        if (w > 0)  { total += static_cast<size_t>(w); continue; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { yield(); continue; }
+        if (errno == EINTR) { continue; }
+        return false;
     }
     return true;
 }
@@ -109,9 +116,11 @@ void RpcServer::start() {
                     int client_fd = accept(server_fd_, nullptr, nullptr);
                     if (client_fd < 0) break;
 
-                    // 连接数限制
+                    // 连接数限制：先发魔法值让客户端感知，再关闭
                     if (active_connections_.load(std::memory_order_relaxed) >= kMaxConnections) {
                         LOG_WARN("[Server] Connection limit reached, rejecting new connection");
+                        uint32_t busy_net = htonl(kServerBusyMagic);
+                        ::write(client_fd, &busy_net, 4);  // 非阻塞写，失败也忽略
                         close(client_fd);
                         continue;
                     }
@@ -119,9 +128,9 @@ void RpcServer::start() {
 
                     fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL) | O_NONBLOCK);
 
-                    // 使用 EPOLLONESHOT：触发一次后自动 disarm，防止多 worker 并发处理同一 fd
+                    // 使用 EPOLLET + EPOLLONESHOT：边缘触发，防止多 worker 并发处理同一 fd
                     epoll_event client_ev{};
-                    client_ev.events  = EPOLLIN | EPOLLONESHOT;
+                    client_ev.events  = EPOLLIN | EPOLLET | EPOLLONESHOT;
                     client_ev.data.fd = client_fd;
                     epoll_ctl(epfd_, EPOLL_CTL_ADD, client_fd, &client_ev);
                 }
@@ -140,9 +149,7 @@ void RpcServer::handle_client(int fd) {
     MetricsManager::instance().incr_rpc_calls();
     MetricsManager::instance().incr_concurrent();
 
-    // fd 由 epoll 线程以非阻塞模式接受，在 worker 线程中改回阻塞模式
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
-
+    // fd 始终保持 O_NONBLOCK；read_n/write_all 负责处理 EAGAIN
     // 读取 8 字节结构化 header：[4B method_name_len][4B args_len]
     char hdr[8];
     if (!read_n(fd, hdr, 8)) {
@@ -220,10 +227,9 @@ void RpcServer::handle_client(int fd) {
                  && write_all(fd, result.c_str(), result.size());
 
     if (write_ok) {
-        // 持久连接：切回非阻塞模式，重新注册到 epoll（EPOLLONESHOT 需要 MOD 重新 arm）
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+        // 持久连接：重新注册到 epoll（EPOLLONESHOT 需要 MOD 重新 arm，fd 保持 O_NONBLOCK）
         epoll_event ev{};
-        ev.events  = EPOLLIN | EPOLLONESHOT;
+        ev.events  = EPOLLIN | EPOLLET | EPOLLONESHOT;
         ev.data.fd = fd;
         if (epoll_ctl(epfd_, EPOLL_CTL_MOD, fd, &ev) == 0) {
             // 连接保持，active_connections_ 不递减
@@ -251,7 +257,9 @@ void RpcClient::init() {
 
 std::string RpcClient::call(const std::string& ip, int port,
                             const std::string& full_method_name,
-                            const std::string& args) {
+                            const std::string& args,
+                            int* err_code) {
+    if (err_code) *err_code = 0;
     ConnectionPool& pool = ConnectionPool::instance();
 
     // 至多重试 1 次（处理 is_alive 通过但实际发送时连接已断的窗口期）
@@ -260,6 +268,7 @@ std::string RpcClient::call(const std::string& ip, int port,
         if (sockfd == -1) {
             LOG_ERROR("[Client] ConnectionPool exhausted for "
                       + ip + ":" + std::to_string(port));
+            if (err_code) *err_code = 2;
             return "";
         }
 
@@ -275,19 +284,29 @@ std::string RpcClient::call(const std::string& ip, int port,
         uint32_t resp_len = 0;
         std::string response;
 
-        bool ok = write_all(sockfd, req_hdr, 8)
-               && write_all(sockfd, full_method_name.c_str(), full_method_name.size())
-               && write_all(sockfd, args.c_str(), args.size())
-               && read_n(sockfd, resp_hdr, 4)
-               && [&]() {
-                      resp_len = ntohl(*reinterpret_cast<uint32_t*>(resp_hdr));
-                      static constexpr uint32_t kMax = 4 * 1024 * 1024;
-                      if (resp_len == 0 || resp_len > kMax) return false;
-                      response.resize(resp_len);
-                      return read_n(sockfd, &response[0], resp_len);
-                  }();
+        bool send_ok = write_all(sockfd, req_hdr, 8)
+                    && write_all(sockfd, full_method_name.c_str(), full_method_name.size())
+                    && write_all(sockfd, args.c_str(), args.size());
+        bool recv_ok = send_ok && read_n(sockfd, resp_hdr, 4);
 
-        if (ok) {
+        if (recv_ok) {
+            resp_len = ntohl(*reinterpret_cast<uint32_t*>(resp_hdr));
+            // 服务端连接数达上限时的魔法值
+            if (resp_len == kServerBusyMagic) {
+                pool.discard(ip, port, sockfd);  // 服务端已关闭连接
+                if (err_code) *err_code = 1;     // OVERLOAD
+                return "";
+            }
+            static constexpr uint32_t kMax = 4 * 1024 * 1024;
+            if (resp_len > 0 && resp_len <= kMax) {
+                response.resize(resp_len);
+                recv_ok = read_n(sockfd, &response[0], resp_len);
+            } else {
+                recv_ok = false;
+            }
+        }
+
+        if (send_ok && recv_ok) {
             pool.release(ip, port, sockfd);
             return response;
         }
@@ -300,6 +319,7 @@ std::string RpcClient::call(const std::string& ip, int port,
     }
 
     LOG_ERROR("[Client] call failed after retry: " + full_method_name);
+    if (err_code) *err_code = 2;
     return "";
 }
 

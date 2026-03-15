@@ -1,4 +1,5 @@
 #include "my_log.h"
+#include <fcntl.h>
 
 myLog::myLog()
 {
@@ -20,13 +21,13 @@ myLog::~myLog()
         std::lock_guard<std::mutex> lock(global_queue_mutex);
         std::string log;
         while (global_log_queue->pop(log)) {
-            fputs(log.c_str(), m_fp);
+            ::write(m_fd, log.c_str(), log.size());
         }
     }
 
-    fflush(m_fp);
-    if (m_fp) {
-        fclose(m_fp);
+    if (m_fd != -1) {
+        close(m_fd);
+        m_fd = -1;
         std::cout << "Log file closed." << std::endl;
     }
 }
@@ -68,8 +69,8 @@ bool myLog::init(const char *file_name, int close_log, int log_buf_size,
     }
 
     m_today = my_tm.tm_mday;
-    m_fp = fopen(log_full_name, "a");
-    if (!m_fp) {
+    m_fd = open(log_full_name, O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (m_fd == -1) {
         std::cerr << "Failed to open log file: " << log_full_name << std::endl;
         return false;
     }
@@ -99,8 +100,7 @@ void myLog::write_log(LogLevel level, const std::string &message)
         m_count++;
 
         if (m_today != tm_time.tm_mday || m_count % m_split_lines == 0) {
-            fflush(m_fp);
-            fclose(m_fp);
+            close(m_fd);
 
             std::ostringstream oss;
             oss << std::setfill('0') << std::setw(4) << tm_time.tm_year + 1900 << "_"
@@ -117,7 +117,7 @@ void myLog::write_log(LogLevel level, const std::string &message)
                 new_log = dir_name + tail + log_name + "." + std::to_string(m_count / m_split_lines);
             }
 
-            m_fp = fopen(new_log.c_str(), "a");
+            m_fd = open(new_log.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
         }
     }
 
@@ -160,9 +160,9 @@ void myLog::async_write_log()
         if (!batch.empty()) {
             std::lock_guard<std::mutex> lock(m_mutex);
             for (auto &msg : batch) {
-                fputs(msg.c_str(), m_fp);
+                ::write(m_fd, msg.c_str(), msg.size());
             }
-            fflush(m_fp);
+            // write() 已直接进内核 page cache，无需 userspace flush
             batch.clear();
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -172,6 +172,5 @@ void myLog::async_write_log()
 
 void myLog::flush()
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    fflush(m_fp);
+    // write() 直接进内核 page cache，无需 userspace flush；保留接口供兼容调用
 }

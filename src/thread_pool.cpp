@@ -46,7 +46,7 @@ void ThreadPool::worker_loop() {
     ThreadLocalGuard guard;
     while (true) {
 
-        std::function<void()> task;
+        std::vector<std::function<void()>> batch;
         {
             std::unique_lock<std::mutex> lock(mtx);
             cv.wait(lock, [&]() { return stop || !tasks.empty(); });
@@ -55,18 +55,21 @@ void ThreadPool::worker_loop() {
                 break;  // 所有任务完成，准备退出
             }
 
-            // 从队列中获取任务
-            if (!tasks.empty()) {
-                task = std::move(tasks.front());
+            // 批量取出所有可用任务
+            while (!tasks.empty()) {
+                batch.push_back(std::move(tasks.front()));
                 tasks.pop();
             }
         }
 
-        // 将任务加入调度器
-        if (task) {
-            scheduler.add_coroutine(std::move(task));
-            LOG_INFO("[Thread] added task to scheduler");
-            scheduler.run();  // 调度协程
+        // 全部加入同一 scheduler，协程间通过 yield() 交替执行
+        if (!batch.empty()) {
+            for (auto& task : batch) {
+                scheduler.add_coroutine(std::move(task));
+            }
+            LOG_INFO("[Thread] added " + std::to_string(batch.size()) + " tasks to scheduler");
+            scheduler.run();   // 调度所有协程直到全部完成
+            scheduler.clear(); // 释放所有 FINISHED 协程内存
         }
     }
 }

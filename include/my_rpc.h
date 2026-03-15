@@ -73,7 +73,11 @@ public:
     void init();
     
     // 发送请求："Service.Method|参数"
-    std::string call(const std::string& ip, int port, const std::string& full_method_name, const std::string& args);
+    // err_code: 0=OK, 1=OVERLOAD（服务端连接数达上限）, 2=NETWORK（网络错误）
+    std::string call(const std::string& ip, int port,
+                     const std::string& full_method_name,
+                     const std::string& args,
+                     int* err_code = nullptr);
     void call_async(const std::string& ip, int port,
         const std::string& full_method_name,
         const std::string& args,

@@ -66,7 +66,7 @@ private:
     int m_log_buf_size;
     long long m_count;
     int m_today;
-    FILE *m_fp;
+    int m_fd{-1};   // 低级文件描述符，write() 直接进内核 page cache
     char *m_buf;
     // block_queue<std::string> *m_log_queue; //阻塞队列
     bool m_is_async;
@@ -81,7 +81,7 @@ private:
     if (myLog::get_instance()->is_open()) { \
         myLog::get_instance()->write_log(myLog::LogLevel::DEBUG, msg); \
         if (ThreadLocalBuffers::local_buffer.size() >= ThreadLocalBuffers::BUFFER_SIZE/2) {\
-            myLog::get_instance()->flush(); \
+            myLog::get_instance()->flush_local_buffer(); \
         }\
     }
 
@@ -89,7 +89,7 @@ private:
 if (myLog::get_instance()->is_open()) { \
     myLog::get_instance()->write_log(myLog::LogLevel::INFO, msg); \
     if (ThreadLocalBuffers::local_buffer.size() >= ThreadLocalBuffers::BUFFER_SIZE/2) {\
-        myLog::get_instance()->flush(); \
+        myLog::get_instance()->flush_local_buffer(); \
     }\
 }
 
@@ -97,7 +97,7 @@ if (myLog::get_instance()->is_open()) { \
 if (myLog::get_instance()->is_open()) { \
     myLog::get_instance()->write_log(myLog::LogLevel::WARN, msg); \
     if (ThreadLocalBuffers::local_buffer.size() >= ThreadLocalBuffers::BUFFER_SIZE/2) {\
-        myLog::get_instance()->flush(); \
+        myLog::get_instance()->flush_local_buffer(); \
     }\
 }
 
@@ -105,7 +105,7 @@ if (myLog::get_instance()->is_open()) { \
 if (myLog::get_instance()->is_open()) { \
     myLog::get_instance()->write_log(myLog::LogLevel::ERROR, msg); \
     if (ThreadLocalBuffers::local_buffer.size() >= ThreadLocalBuffers::BUFFER_SIZE/2) {\
-        myLog::get_instance()->flush(); \
+        myLog::get_instance()->flush_local_buffer(); \
     }\
 }
 

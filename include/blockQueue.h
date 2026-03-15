@@ -115,7 +115,7 @@ private:
 
 namespace ThreadLocalBuffers {
     extern thread_local std::vector<std::string> local_buffer; // 线程本地缓冲
-    constexpr size_t BUFFER_SIZE = 100; // 本地缓冲阈值
+    constexpr size_t BUFFER_SIZE = 10;  // 本地缓冲阈值（小值减少 SIGKILL 时丢失的日志数）
 }
 
 extern std::shared_ptr<block_queue<std::string>> global_log_queue; // 全局队列
