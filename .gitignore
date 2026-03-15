@@ -1,0 +1,20 @@
+build/
+*.o
+*.a
+*.so
+*.bin
+*.txt.bak
+# Raft 运行时产物
+raft_state_*.txt
+raft_log_*.bin
+RaftLog_*/
+2026_*/
+ClientLog*/
+SvcDiscLog*/
+PressureLog*/
+# 编译产物
+main
+pressure_test
+raft_node_main
+raft_test
+service_discovery_test
