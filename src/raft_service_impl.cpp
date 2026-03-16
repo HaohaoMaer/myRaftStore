@@ -6,9 +6,8 @@ void RaftServiceImpl::RequestVote(::google::protobuf::RpcController*,
     ::raft::VoteResponse* response,
     ::google::protobuf::Closure* done)
 {
-    myrpc::ClosureGuard guard(done);
+    myrpc::ClosureGuard guard(done);  // ClosureGuard 析构时调用 done->Run()，不再手动调用
     node_->handle_request_vote(request, response);
-    done->Run();
 }
 
 void RaftServiceImpl::AppendEntries(::google::protobuf::RpcController*,
@@ -18,7 +17,6 @@ void RaftServiceImpl::AppendEntries(::google::protobuf::RpcController*,
 {
     myrpc::ClosureGuard guard(done);
     node_->handle_append_entries(request, response);
-    done->Run();
 }
 
 void RaftServiceImpl::ClientStorage(::google::protobuf::RpcController*,
@@ -39,15 +37,13 @@ void RaftServiceImpl::ClientStorage(::google::protobuf::RpcController*,
             response->set_success(false);
             response->set_addr(node_->leader_addr_);
             response->set_port(node_->leader_port_);
-            done->Run();
-            return;
+            return;  // guard 析构时调用 done->Run()
         }
 
         if (is_read) {
             // A3/A4: 读路径 — leader local read，不走 Raft log
             response->set_success(true);
             response->set_value(node_->kv_query(cmd));
-            done->Run();
             return;
         }
 
@@ -60,6 +56,14 @@ void RaftServiceImpl::ClientStorage(::google::protobuf::RpcController*,
         bool committed = node_->wait_for_commit(target_index, 3000);
         response->set_success(committed);
     }
+    // guard 析构时调用 done->Run()
+}
 
-    done->Run();
+void RaftServiceImpl::InstallSnapshot(::google::protobuf::RpcController*,
+    const ::raft::InstallSnapshotRequest* request,
+    ::raft::InstallSnapshotResponse* response,
+    ::google::protobuf::Closure* done)
+{
+    myrpc::ClosureGuard guard(done);
+    node_->handle_install_snapshot(request, response);
 }

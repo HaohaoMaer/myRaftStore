@@ -39,7 +39,7 @@ public:
     }    
 
     enum class LogLevel {
-        DEBUF = 0,
+        DEBUG = 0,
         INFO = 1,
         WARN = 2,
         ERROR = 3
@@ -66,15 +66,14 @@ private:
     int m_log_buf_size;
     long long m_count;
     int m_today;
-    int m_fd{-1};   // 低级文件描述符，write() 直接进内核 page cache
+    int m_fd{-1};       // 低级文件描述符，write() 直接进内核 page cache
+    int m_close_log{1}; // 默认关闭（1=closed），init() 后置为 0
     char *m_buf;
     // block_queue<std::string> *m_log_queue; //阻塞队列
     bool m_is_async;
     std::mutex m_mutex;
-    int m_close_log;
     std::atomic<bool> m_stop_flag{false};
     std::thread m_log_thread;
-    // myLog.h 添加
 };
 
 #define LOG_DEBUG(msg) \

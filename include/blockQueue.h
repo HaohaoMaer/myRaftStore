@@ -63,11 +63,12 @@ public:
         return true;
     }
 
+    // 非阻塞 pop：队列为空时立即返回 false，不会阻塞等待（名称 block_queue 指线程安全，非阻塞语义）
     bool pop(T& value) {
         std::unique_lock<std::mutex> lock(m_mutex);
 
         if (m_size <= 0) {
-            return false; // 非阻塞模式
+            return false;
         }
         value = m_array[m_front];
         m_front = (m_front + 1) % m_max_size;

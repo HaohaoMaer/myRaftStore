@@ -34,7 +34,6 @@ int main() {
     myrpc::RpcClient client(5);
     client.init();
     while(true){
-
         // 构造请求：Add 请求
         testrpc::AddRequest req;
         req.set_a(10);
@@ -44,9 +43,10 @@ int main() {
 
         // 调用 CalculatorService.Add 方法
         std::string add_resp_bin = client.call("127.0.0.1", 12345, "testrpc.CalculatorService.Add", req_bin);
-        // std::cout << MetricsManager::instance().get_rpc_calls() << std::endl;
         testrpc::AddResponse add_resp;
         add_resp.ParseFromString(add_resp_bin);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));  // 限速，避免 CPU 100% 压垮连接池
     }
     // LOG_INFO(std::string("[Client] Add result = ") + std::to_string(add_resp.sum()));
 

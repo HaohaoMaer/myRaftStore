@@ -47,7 +47,8 @@ void RpcServer::init(int close_log, int log_write, int thread_num) {
 
 RpcServer::~RpcServer() {
     if (m_threadpool) {
-        m_threadpool->~ThreadPool();
+        delete m_threadpool;   // 正确释放内存（原来错误地直接调用析构函数）
+        m_threadpool = nullptr;
     }
     if (epfd_ != -1)     { close(epfd_);     }
     if (server_fd_ != -1){ close(server_fd_); }
@@ -208,8 +209,9 @@ void RpcServer::handle_client(int fd) {
         if (!request->ParseFromString(args)) {
             result = "Failed to parse request";
         } else {
-            google::protobuf::Closure* done =
-                google::protobuf::NewPermanentCallback([]() {});
+            // NewCallback 在 Run() 后自动 delete，避免永久泄漏
+        google::protobuf::Closure* done =
+                google::protobuf::NewCallback(+[]() {});
             LOG_INFO(std::string("[Server] Calling method: ") + full_name);
             service->CallMethod(method, nullptr, request.get(), response.get(), done);
             LOG_INFO(std::string("[Server] Method call completed: ") + full_name);
@@ -253,6 +255,11 @@ void RpcServer::handle_client(int fd) {
 
 void RpcClient::init() {
     m_threadpool = new ThreadPool(thread_num_);
+}
+
+RpcClient::~RpcClient() {
+    delete m_threadpool;
+    m_threadpool = nullptr;
 }
 
 std::string RpcClient::call(const std::string& ip, int port,

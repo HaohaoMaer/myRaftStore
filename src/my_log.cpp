@@ -44,6 +44,8 @@ void myLog::flush_local_buffer() {
 bool myLog::init(const char *file_name, int close_log, int log_buf_size,
                  int split_lines, int max_queue_size)
 {
+    // max_queue_size <= 0 视为"使用默认值"，避免 block_queue 构造函数 exit(-1)
+    if (max_queue_size <= 0) max_queue_size = 1000;
     global_log_queue = std::make_shared<block_queue<std::string>>(max_queue_size);
 
     m_close_log = close_log;

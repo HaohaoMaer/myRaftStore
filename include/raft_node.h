@@ -2,6 +2,7 @@
 #include "raft_service_impl.h"
 #include <my_rpc.h>
 #include <condition_variable>
+#include <random>
 
 struct PeerInfo {
     int id;
@@ -32,8 +33,11 @@ public:
     // timeout_ms 超时后返回 false
     bool wait_for_commit(int target_index, int timeout_ms);
 
+    void handle_install_snapshot(const ::raft::InstallSnapshotRequest* request,
+                                 ::raft::InstallSnapshotResponse* response);
+
 private:
-    void start_election();
+    void start_election(std::unique_lock<std::mutex>& lk);
     void send_heartbeat();
     void handle_append_entries(const ::raft::AppendRequest* request, ::raft::AppendResponse* response);
     void handle_request_vote(const ::raft::VoteRequest* request, ::raft::VoteResponse* response);
@@ -45,11 +49,43 @@ private:
     void load_persistent_state();
     int  random_election_timeout();
 
+    // ── 快照相关函数（调用方持 mutex_，除 load_snapshot 外）──────────────────
+    bool save_snapshot();                   // 写快照文件（原子写）
+    bool load_snapshot();                   // 启动时加载快照（单线程）
+    void take_snapshot();                   // 截断日志并持久化快照
+    void install_snapshot(int last_index, int last_term, const raft::SnapshotData& data);
+    void send_install_snapshot_to(const PeerInfo& peer);
+
+    // ── 索引辅助函数（调用方持 mutex_）─────────────────────────────────────
+    int log_physical_index(int logical_index) const {
+        return logical_index - snapshot_last_index_ - 1;
+    }
+    int log_logical_index(int physical_index) const {
+        return physical_index + snapshot_last_index_ + 1;
+    }
+    int last_log_index() const {
+        return log_.empty() ? snapshot_last_index_
+                            : log_logical_index(static_cast<int>(log_.size()) - 1);
+    }
+    int log_term_at(int logical_index) const {
+        if (logical_index == snapshot_last_index_) return snapshot_last_term_;
+        if (logical_index < snapshot_last_index_)  return -1;
+        return log_[log_physical_index(logical_index)].term();
+    }
+    const raft::LogEntry& log_entry_at(int logical_index) const {
+        return log_[log_physical_index(logical_index)];
+    }
+
     // ── 持久化字段 ──────────────────────────────────────────────────────────
     int current_term_{0};
     int voted_for_{-1};
     int log_commit_index_{-1};  // 已提交的最高日志 index（持久化）
     int last_applied_{-1};      // 已应用到状态机的最高 index（运行时）
+
+    // ── 快照元数据 ──────────────────────────────────────────────────────────
+    int snapshot_last_index_{-1};  // 快照覆盖的最后一条逻辑日志索引（-1=无快照）
+    int snapshot_last_term_{-1};   // 快照覆盖的最后一条日志的 term
+    static constexpr int kSnapshotThreshold = 1000;  // 触发快照的已应用日志数阈值
 
     // ── 节点信息 ────────────────────────────────────────────────────────────
     int         node_id_;
@@ -91,6 +127,9 @@ private:
     // ── 日志系统 ─────────────────────────────────────────────────────────────
     int m_close_log{0};
     int m_log_write{1};
+
+    // ── 随机数生成器（选举超时使用，每个节点种子不同）────────────────────────
+    std::mt19937 rng_;
 
     static constexpr int kHeartbeatIntervalMs = 100;
 

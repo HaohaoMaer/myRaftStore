@@ -1,3 +1,4 @@
+#pragma once
 #include "rpc.pb.h"
 #include "closure_guard.h"
 

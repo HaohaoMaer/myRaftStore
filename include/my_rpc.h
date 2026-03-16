@@ -67,8 +67,8 @@ private:
 
 class RpcClient {
 public:
-    RpcClient(int num): thread_num_(num) {
-    }
+    RpcClient(int num): thread_num_(num), m_threadpool(nullptr) {}
+    ~RpcClient();
 
     void init();
     
