@@ -54,3 +54,9 @@ list(REMOVE_ITEM SVCDISCO_SOURCES ${MAIN_SRC})
 
 add_executable(service_discovery_test test/service_discovery_test.cpp ${SVCDISCO_SOURCES})
 target_link_libraries(service_discovery_test ${Protobuf_LIBRARIES} pthread z)
+
+set(RAFTBENCH_SOURCES ${SOURCES})
+list(REMOVE_ITEM RAFTBENCH_SOURCES ${MAIN_SRC})
+
+add_executable(raft_bench test/raft_bench.cpp ${RAFTBENCH_SOURCES})
+target_link_libraries(raft_bench ${Protobuf_LIBRARIES} pthread z)

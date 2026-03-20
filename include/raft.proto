@@ -6,6 +6,7 @@ service RaftService {
   rpc RequestVote (VoteRequest) returns (VoteResponse);
   rpc AppendEntries (AppendRequest) returns (AppendResponse);
   rpc ClientStorage (ClientRequest) returns (ClientResponse);
+  rpc InstallSnapshot (InstallSnapshotRequest) returns (InstallSnapshotResponse);
 }
 
 message VoteRequest {
@@ -51,4 +52,28 @@ message ClientResponse {
   string addr    = 2;
   int32  port    = 3;
   string value   = 4;
+}
+
+message KVPair {
+  string key   = 1;
+  string value = 2;
+}
+
+message SnapshotData {
+  repeated KVPair kv_pairs = 1;
+}
+
+message InstallSnapshotRequest {
+  int32        term                = 1;
+  int32        leader_id           = 2;
+  string       leader_ip           = 3;
+  int32        leader_port         = 4;
+  int32        last_included_index = 5;
+  int32        last_included_term  = 6;
+  SnapshotData data                = 7;
+}
+
+message InstallSnapshotResponse {
+  int32 term    = 1;
+  bool  success = 2;
 }

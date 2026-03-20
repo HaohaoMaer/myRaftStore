@@ -27,6 +27,11 @@ class RaftServiceImpl : public raft::RaftService {
             ::raft::ClientResponse* response,
             ::google::protobuf::Closure* done);
 
+  void InstallSnapshot(::google::protobuf::RpcController* controller,
+            const ::raft::InstallSnapshotRequest* request,
+            ::raft::InstallSnapshotResponse* response,
+            ::google::protobuf::Closure* done);
+
 private:
     RaftNode* node_;
 };
